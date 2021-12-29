@@ -33,11 +33,19 @@ import (
 	registerapi "k8s.io/kubelet/pkg/apis/pluginregistration/v1"
 )
 
+// zhou: run forever
+
 func nodeRegister(csiDriverName, httpEndpoint string) {
+
+	// zhou: "kubeletRegistrationPath" must be provided in node-driver-registrar
+
 	// When kubeletRegistrationPath is specified then driver-registrar ONLY acts
 	// as gRPC server which replies to registration requests initiated by kubelet's
 	// plugins watcher infrastructure. Node labeling is done by kubelet's csi code.
 	registrar := newRegistrationServer(csiDriverName, *kubeletRegistrationPath, supportedVersions)
+
+	// zhou: generate sock file path "/registration/plugin.csi.example.com-reg.sock" , used in container
+
 	socketPath := buildSocketPath(csiDriverName)
 	if err := util.CleanupSocketFile(socketPath); err != nil {
 		klog.Errorf("%+v", err)
@@ -51,6 +59,10 @@ func nodeRegister(csiDriverName, httpEndpoint string) {
 	}
 
 	klog.Infof("Starting Registration Server at: %s\n", socketPath)
+
+	// zhou: serve on this path
+	//       the unix sock file will be created automatically.
+
 	lis, err := net.Listen("unix", socketPath)
 	if err != nil {
 		klog.Errorf("failed to listen on socket: %s with error: %+v", socketPath, err)
@@ -62,6 +74,8 @@ func nodeRegister(csiDriverName, httpEndpoint string) {
 	klog.Infof("Registration Server started at: %s\n", socketPath)
 	grpcServer := grpc.NewServer()
 
+	// zhou: remove lock file "/var/lib/kubelet/plugins/<drivername.example.com>/registration"
+
 	// Before registering node-driver-registrar with the kubelet ensure that the lockfile doesn't exist
 	// a lockfile may exist because the container was forcefully shutdown
 	util.CleanupFile(registrationProbePath)
@@ -69,8 +83,16 @@ func nodeRegister(csiDriverName, httpEndpoint string) {
 	// Registers kubelet plugin watcher api.
 	registerapi.RegisterRegistrationServer(grpcServer, registrar)
 
+	// zhou: health monitor http service
+
 	go httpServer(socketPath, httpEndpoint)
+
+	// zhou: handle sigterm signal to clean up some resource.
+
 	go removeRegSocket(csiDriverName)
+
+	// zhou: start device plugin registration server.
+
 	// Starts service
 	if err := grpcServer.Serve(lis); err != nil {
 		klog.Errorf("Registration Server stopped serving: %v", err)
@@ -82,6 +104,8 @@ func nodeRegister(csiDriverName, httpEndpoint string) {
 	// If gRPC server is gracefully shutdown, cleanup and exit
 	os.Exit(0)
 }
+
+// zhou: "/registration/plugin.csi.example.com-reg.sock"
 
 func buildSocketPath(csiDriverName string) string {
 	return fmt.Sprintf("%s/%s-reg.sock", *pluginRegistrationPath, csiDriverName)
@@ -126,6 +150,7 @@ func httpServer(socketPath string, httpEndpoint string) {
 	klog.Fatal(http.ListenAndServe(httpEndpoint, mux))
 }
 
+// zhou: handle signal to clean up "/registration/plugin.csi.example.com-reg.sock"
 func removeRegSocket(csiDriverName string) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGTERM)

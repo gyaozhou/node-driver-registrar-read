@@ -1,6 +1,8 @@
 //go:build !windows
 // +build !windows
 
+// zhou: add flags above to control different OS.
+
 /*
 Copyright 2019 The Kubernetes Authors.
 

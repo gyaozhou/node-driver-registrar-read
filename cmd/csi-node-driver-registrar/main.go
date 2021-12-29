@@ -45,6 +45,7 @@ const (
 )
 
 const (
+	// zhou: normal mode
 	// ModeRegistration runs node-driver-registrar as a long running process
 	ModeRegistration = "registration"
 
@@ -54,6 +55,9 @@ const (
 )
 
 var (
+	// zhou: "/var/lib/kubelet/plugins/<drivername.example.com>/registration"
+	//       It is used as lock file.
+
 	// The registration probe path, set when the program runs and used as the path of the file
 	// to create when the kubelet plugin registration succeeds.
 	registrationProbePath = ""
@@ -61,6 +65,11 @@ var (
 
 // Command line flags
 var (
+	// zhou: critical path
+	//      "csiAddress", path in container, used for node-registrar connecting to CSI plugin. Mapping on host path "kubeletRegistrationPath"
+	//     "pluginRegistrationPath", "/var/lib/kubelet/plugins_registry", path in container, used for kubelet device plugin discovery.
+	//     "kubeletRegistrationPath", /var/lib/kubelet/plugins/[drivername.example.com]/csi_sock. Path on host, used for kubelet connecting to CSI plugin directly.
+
 	connectionTimeout       = flag.Duration("connection-timeout", 0, "The --connection-timeout flag is deprecated")
 	operationTimeout        = flag.Duration("timeout", time.Second, "Timeout for waiting for communication with driver")
 	csiAddress              = flag.String("csi-address", "/run/csi/socket", "Path of the CSI driver socket that the node-driver-registrar will connect to.")
@@ -78,6 +87,8 @@ var (
 	// List of supported versions
 	supportedVersions = []string{"1.0.0"}
 )
+
+// zhou: work as device plugin rpc server.
 
 // registrationServer is a sample plugin to work with plugin watcher
 type registrationServer struct {
@@ -97,9 +108,15 @@ func newRegistrationServer(driverName string, endpoint string, versions []string
 	}
 }
 
+// zhou: k8s device plugin mechanism, kubelet invoke this function.
+//       "For any discovered plugin, kubelet will issue a Registration.GetInfo gRPC call
+//       to get plugin type, name, endpoint and supported service API versions."
+
 // GetInfo is the RPC invoked by plugin watcher
 func (e registrationServer) GetInfo(ctx context.Context, req *registerapi.InfoRequest) (*registerapi.PluginInfo, error) {
 	klog.Infof("Received GetInfo call: %+v", req)
+
+	// zhou: get the lock file to notify the registration completed.
 
 	// on successful registration, create the registration probe file
 	err := util.TouchFile(registrationProbePath)
@@ -110,12 +127,17 @@ func (e registrationServer) GetInfo(ctx context.Context, req *registerapi.InfoRe
 	}
 
 	return &registerapi.PluginInfo{
+		// zhou: not Device Plugin, this is CSI Plugin.
 		Type:              registerapi.CSIPlugin,
 		Name:              e.driverName,
-		Endpoint:          e.endpoint,
+		Endpoint:          e.endpoint, // zhou: by this information, kubelet knows csi.sock, and call csi rpc via it directly.
 		SupportedVersions: e.version,
 	}, nil
 }
+
+// zhou: k8s device plugin mechanism, kubelet invoke this function to complete the CSI plugin registration.
+//       Afterward, node-driver-registrar will not triger rpc call to csi driver.
+//       kubelet already know csi.sock, and call via it directly.
 
 func (e registrationServer) NotifyRegistrationStatus(ctx context.Context, status *registerapi.RegistrationStatus) (*registerapi.RegistrationStatusResponse, error) {
 	klog.Infof("Received NotifyRegistrationStatus call: %+v", status)
@@ -126,6 +148,8 @@ func (e registrationServer) NotifyRegistrationStatus(ctx context.Context, status
 
 	return &registerapi.RegistrationStatusResponse{}, nil
 }
+
+// zhou: mode for one off health check.
 
 func modeIsKubeletRegistrationProbe() bool {
 	return *mode == ModeKubeletRegistrationProbe
@@ -147,6 +171,10 @@ func main() {
 	}
 	// set after we made sure that *kubeletRegistrationPath exists
 	kubeletRegistrationPathDir := filepath.Dir(*kubeletRegistrationPath)
+
+	// zhou: "/var/lib/kubelet/plugins/<drivername.example.com>/registration"
+	//       It is used as lock file.
+
 	registrationProbePath = filepath.Join(kubeletRegistrationPathDir, "registration")
 
 	// with the mode kubelet-registration-probe
@@ -166,6 +194,8 @@ func main() {
 
 	klog.Infof("Version: %s", version)
 	klog.Infof("Running node-driver-registrar in mode=%s", *mode)
+
+	// zhou: once enable health monitor
 
 	if *healthzPort > 0 && *httpEndpoint != "" {
 		klog.Error("only one of `--health-port` and `--http-endpoint` can be set.")
@@ -190,6 +220,9 @@ func main() {
 	// can skip adding mapping to "csi.volume.kubernetes.io/nodeid" annotation.
 
 	klog.V(1).Infof("Attempting to open a gRPC connection with: %q", *csiAddress)
+
+	// zhou: setup connection to csi sock
+
 	csiConn, err := connection.Connect(*csiAddress, cmm)
 	if err != nil {
 		klog.Errorf("error connecting to CSI driver: %v", err)
@@ -200,6 +233,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *operationTimeout)
 	defer cancel()
 
+	// zhou: invoke CSI Identity Serivce GetPluginInfo() to get driver name from csi driver.
+
 	csiDriverName, err := csirpc.GetDriverName(ctx, csiConn)
 	if err != nil {
 		klog.Errorf("error retreiving CSI driver name: %v", err)
@@ -208,6 +243,8 @@ func main() {
 
 	klog.V(2).Infof("CSI driver name: %q", csiDriverName)
 	cmm.SetDriverName(csiDriverName)
+
+	// zhou: "addr" for health check only.
 
 	// Run forever
 	nodeRegister(csiDriverName, addr)

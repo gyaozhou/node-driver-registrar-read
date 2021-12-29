@@ -1,2 +1,6 @@
 # compiled binaries
 /bin/
+cscope.out
+cscope.files
+TAGS
+
